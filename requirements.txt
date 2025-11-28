@@ -1,0 +1,7 @@
+# requirements.txt
+fastapi
+uvicorn[standard]
+pydantic>=2.0
+requests
+google-genai
+python-dotenv
