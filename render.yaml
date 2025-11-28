@@ -1,0 +1,14 @@
+# render.yaml
+services:
+  - type: web
+    name: bfhl-bill-extractor
+    env: python
+    # Build command installs dependencies
+    buildCommand: "pip install -r requirements.txt"
+    # Start command runs your FastAPI application
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    # The environment variable where your API Key will be securely stored
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false # Set to false to prevent the actual value from being committed
+        # NOTE: You will set the VALUE of the key in the Render dashboard.
