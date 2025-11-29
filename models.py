@@ -1,16 +1,16 @@
 # models.py
 
 from pydantic import BaseModel, Field, RootModel
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional, Any, Union # Added Any for robust parsing
 
 # --- 1. Sub-Schemas for Line Items and Tokens ---
 
 class BillItem(BaseModel):
     """Schema for a single line item, matching the required fields."""
-    item_name: str = Field(..., description="Exactly as mentioned in the bill (e.g., 'Livi 300mg Tab').")
+    item_name: str = Field(..., description="Name of the item exactly as mentioned in the bill.")
     item_amount: float = Field(..., description="Net Amount of the item post discounts as mentioned in the bill, must be a float.")
-    item_rate: float = Field(..., description="The item's unit rate, must be a float.")
-    item_quantity: float = Field(..., description="The quantity or hours of the item (e.g., 1.00, 4.0), must be a float.")
+    item_rate: float = Field(..., description="Rate per unit exactly as mentioned in the bill, must be a float.")
+    item_quantity: float = Field(..., description="Quantity exactly as mentioned in the bill, must be a float.")
 
 class TokenUsage(BaseModel):
     """Schema for tracking cumulative token usage, all integers."""
@@ -33,9 +33,8 @@ class PagewiseLineItems(BaseModel):
 
 class PagewiseListRoot(RootModel):
     """
-    CRITICAL FIX: Wraps the list of pages to simplify the JSON schema
-    and avoid the Gemini API's 'Unsupported schema type' error.
-    The LLM will be instructed to output this model.
+    CRITICAL FIX: Wraps the list of pages to simplify the JSON schema 
+    for the Gemini API's structured output.
     """
     root: List[PagewiseLineItems]
 
@@ -51,7 +50,7 @@ class FinalTotalKVP(BaseModel):
 class BillData(BaseModel):
     """The core 'data' object in the response (matches submission spec)."""
     pagewise_line_items: List[PagewiseLineItems]
-    total_item_count: int = Field(..., description="Count of unique bill_items across all pages.")
+    total_item_count: int = Field(..., description="Total count of unique bill_items across all pages.")
 
 class ExtractionRequest(BaseModel):
     """The Request Body schema."""
