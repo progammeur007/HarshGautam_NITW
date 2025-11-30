@@ -1,5 +1,4 @@
 # main.py
-# main.py
 
 from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
@@ -19,9 +18,9 @@ from PIL import Image
 import cv2
 import numpy as np
 
-# --- FIX: Import load_dotenv ---
+# --- CRITICAL FIX: The Missing Import is NOW HERE ---
 from dotenv import load_dotenv 
-# ------------------------------
+# ---------------------------------------------------
 
 # Import all models
 from models import (
@@ -41,7 +40,7 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 logger = logging.getLogger("BFHL_Extractor")
 
-load_dotenv() # <--- THIS LINE WILL NOW WORK
+load_dotenv() # <--- THIS CALL IS NOW DEFINED AND WILL WORK
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- FastAPI App Setup ---
@@ -137,7 +136,7 @@ async def extract_bill_data(request: ExtractionRequest):
     tracker = TokenTracker()
     
     try:
-        # Step 1: Run the robust OCR pipeline to get clean text
+        # Step 1: Run the robust OCR pipeline
         extracted_text = fetch_and_ocr(request.document)
         
         if extracted_text == "OCR_FAILED_GENERIC_ERROR":
