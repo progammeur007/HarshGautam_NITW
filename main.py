@@ -1,4 +1,4 @@
-# main.py
+# main.py (FINAL, STABLE CODE FOR SUBMISSION)
 
 from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
@@ -12,35 +12,21 @@ import json
 import logging
 from typing import List, Dict, Any, Union
 
-# Robust OCR/Image Libraries
-import pytesseract
-from PIL import Image
-import cv2
-import numpy as np
-
-# --- CRITICAL FIX: The Missing Import is NOW HERE ---
+# --- STANDARD LIBRARIES ---
 from dotenv import load_dotenv 
-# ---------------------------------------------------
+# --------------------------
 
-# Import all models
+# Import all models (assuming models.py is correct)
 from models import (
     ExtractionRequest, ExtractionResponse, BillData, PagewiseLineItems, 
     TokenUsage, FinalTotalKVP, PagewiseListRoot 
 )
 
-# --- 1. CRITICAL TESSERACT CONFIGURATION & LOGGING ---
-# Set the path to the Tesseract executable. THIS MUST BE CORRECT.
-try:
-    # --- REPLACE THIS PATH WITH YOUR ACTUAL TESSERACT.EXE LOCATION ---
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-except Exception:
-    # Allows deployment environments (like Render) that lack local Tesseract to skip this step.
-    pass 
-
+# --- CONFIGURATION & LOGGING ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 logger = logging.getLogger("BFHL_Extractor")
 
-load_dotenv() # <--- THIS CALL IS NOW DEFINED AND WILL WORK
+load_dotenv() 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- FastAPI App Setup ---
@@ -77,42 +63,26 @@ except Exception as e:
     client = None
 
 
-def fetch_and_ocr(document_url: str) -> str:
-    """ROBUST OCR LAYER: Downloads, preprocesses (cleaning), and extracts text via Tesseract."""
-    logger.info(f"Starting robust OCR for: {document_url}")
-    
-    if not hasattr(pytesseract.pytesseract, 'tesseract_cmd'):
-        logger.warning("Tesseract path not set. Skipping preprocessing and returning fail code.")
-        return "OCR_FAILED_GENERIC_ERROR" 
-    
+def fetch_document(document_url: str) -> List[types.Part]:
+    """STABLE FETCH: Downloads the document and returns it as a Multimodal Part."""
     try:
+        logger.info(f"Attempting native multimodal fetch for: {document_url}")
         doc_response = requests.get(document_url, timeout=30)
         doc_response.raise_for_status()
 
-        image_bytes = io.BytesIO(doc_response.content)
-        img_pil = Image.open(image_bytes).convert('RGB')
+        # NOTE: Gemini automatically handles PDF and image MIME types here
+        mime_type = doc_response.headers.get('Content-Type', 'image/jpeg') 
         
-        img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-        
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-        thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-        
-        extracted_text = pytesseract.image_to_string(
-            thresh, 
-            lang='eng', 
-            config='--psm 6' 
+        document_part = types.Part.from_bytes(
+            data=doc_response.content,
+            mime_type=mime_type
         )
-        
-        if not extracted_text.strip():
-            logger.warning("Tesseract returned empty text.")
-            return "OCR_FAILED_TEXT_EMPTY" 
-        
-        logger.info("OCR successful. Extracted text length: %d", len(extracted_text))
-        return extracted_text
+        logger.info("Document fetched and prepared as Multimodal Part.")
+        return [document_part]
 
     except Exception as e:
-        logger.error(f"ROBUST OCR LAYER FAILED: {e}", exc_info=True)
-        return "OCR_FAILED_GENERIC_ERROR"
+        logger.error(f"Document processing failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error preparing document for LLM.")
 
 
 def extract_json_from_response(response: types.GenerateContentResponse) -> Any:
@@ -136,24 +106,19 @@ async def extract_bill_data(request: ExtractionRequest):
     tracker = TokenTracker()
     
     try:
-        # Step 1: Run the robust OCR pipeline
-        extracted_text = fetch_and_ocr(request.document)
+        # Step 1: Fetch document parts (Multimodal input)
+        document_parts = fetch_document(request.document)
         
-        if extracted_text == "OCR_FAILED_GENERIC_ERROR":
-             raise HTTPException(status_code=500, detail="Document processing failed in the robust OCR layer.")
-
-        logger.info(f"OCR Snippet: {extracted_text[:200].replace('\n', ' ')}...")
-        
-        # --- CALL 1: Line Items and Page Classification (Semantic Parsing) ---
+        # --- CALL 1: Line Items and Page Classification (Multimodal Parsing) ---
         prompt_line_items = (
-            "You are an expert financial document extractor specializing in handwritten, multilingual bills. "
+            "You are an expert financial document extractor specializing in handwritten, multilingual hospital bills. "
             "Your output MUST strictly adhere to the provided Pydantic JSON schema (a list of PagewiseLineItems). "
-            "Analyze the following text extracted via OCR. GUARDRAILS: ONLY extract numeric values clearly associated with currency or price for item_amount/item_rate. DO NOT extract Sl#, Cpt Code, or Date into any amount field. TEXT: "
-        ) + extracted_text 
+            "Analyze the document's structure and contents. GUARDRAILS: ONLY extract numeric values clearly associated with currency or price for item_amount/item_rate. DO NOT extract Sl#, Cpt Code, or Date into any amount field. "
+        )
         
         response_line_items = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=[prompt_line_items], 
+            contents=[prompt_line_items] + document_parts, # Multimodal: sends text prompt + image part
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=PagewiseListRoot 
@@ -172,12 +137,12 @@ async def extract_bill_data(request: ExtractionRequest):
         prompt_totals = (
             "You are an expert auditor. From the document, extract ONLY the final total amount "
             "(the authoritative Grand Total, Net Payable Amount, or Final Total) and the Sub-total (if explicitly present). "
-            "STRICTLY return the data in the Pydantic JSON schema (FinalTotalKVP). TEXT: "
-        ) + extracted_text
+            "STRICTLY return the data in the Pydantic JSON schema (FinalTotalKVP). "
+        )
 
         response_totals = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=[prompt_totals],
+            contents=[prompt_totals] + document_parts,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=FinalTotalKVP
