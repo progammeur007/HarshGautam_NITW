@@ -1,4 +1,4 @@
-# main.py (FINAL, STABLE CODE FOR SUBMISSION)
+# main.py (FINAL STABLE VERSION FOR SUBMISSION)
 
 from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
@@ -11,10 +11,7 @@ import os
 import json 
 import logging
 from typing import List, Dict, Any, Union
-
-# --- STANDARD LIBRARIES ---
-from dotenv import load_dotenv 
-# --------------------------
+from dotenv import load_dotenv # CRITICAL FIX: Ensures env variables load
 
 # Import all models (assuming models.py is correct)
 from models import (
@@ -26,7 +23,7 @@ from models import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 logger = logging.getLogger("BFHL_Extractor")
 
-load_dotenv() 
+load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- FastAPI App Setup ---
@@ -51,39 +48,36 @@ class TokenTracker:
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens
         )
-# --- LLM Client Initialization ---
-try:
-    if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not found. API calls will fail.")
-        client = None 
-    else:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-except Exception as e:
-    logger.error(f"Error initializing Gemini Client: {e}", exc_info=True)
-    client = None
 
 
 def fetch_document(document_url: str) -> List[types.Part]:
-    """STABLE FETCH: Downloads the document and returns it as a Multimodal Part."""
+    """STABLE FETCH: Downloads the document, corrects the MIME type, and returns it as a Multimodal Part."""
     try:
         logger.info(f"Attempting native multimodal fetch for: {document_url}")
         doc_response = requests.get(document_url, timeout=30)
         doc_response.raise_for_status()
 
-        # NOTE: Gemini automatically handles PDF and image MIME types here
-        mime_type = doc_response.headers.get('Content-Type', 'image/jpeg') 
+        # 1. Get the MIME type reported by the server
+        mime_type = doc_response.headers.get('Content-Type', 'application/octet-stream')
         
+        # 2. CRITICAL FIX: Check the URL for extension and override generic MIME type
+        url_lower = document_url.lower()
+        if '.pdf' in url_lower and mime_type not in ['application/pdf']:
+             mime_type = 'application/pdf'
+        elif any(ext in url_lower for ext in ['.jpg', '.jpeg', '.png']):
+             # Keep the existing image mime type or default to jpeg if generic
+             mime_type = 'image/jpeg' 
+
         document_part = types.Part.from_bytes(
             data=doc_response.content,
-            mime_type=mime_type
+            mime_type=mime_type # Sending the corrected MIME type
         )
-        logger.info("Document fetched and prepared as Multimodal Part.")
+        logger.info(f"Document prepared with MIME type: {mime_type}")
         return [document_part]
 
     except Exception as e:
         logger.error(f"Document processing failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error preparing document for LLM.")
-
 
 def extract_json_from_response(response: types.GenerateContentResponse) -> Any:
     """CRITICAL FIX: Manually extracts the clean JSON string from the response payload."""
@@ -109,7 +103,7 @@ async def extract_bill_data(request: ExtractionRequest):
         # Step 1: Fetch document parts (Multimodal input)
         document_parts = fetch_document(request.document)
         
-        # --- CALL 1: Line Items and Page Classification (Multimodal Parsing) ---
+        # --- CALL 1: Line Items and Page Classification ---
         prompt_line_items = (
             "You are an expert financial document extractor specializing in handwritten, multilingual hospital bills. "
             "Your output MUST strictly adhere to the provided Pydantic JSON schema (a list of PagewiseLineItems). "
