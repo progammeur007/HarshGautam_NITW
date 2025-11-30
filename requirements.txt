@@ -1,7 +1,12 @@
 # requirements.txt
+# requirements.txt
 fastapi
 uvicorn[standard]
 pydantic>=2.0
 requests
 google-genai
 python-dotenv
+pytesseract
+Pillow
+opencv-python
+numpy

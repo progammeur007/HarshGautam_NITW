@@ -1,7 +1,7 @@
 # models.py
 
 from pydantic import BaseModel, Field, RootModel
-from typing import List, Literal, Optional, Any, Union # Added Any for robust parsing
+from typing import List, Literal, Optional, Any, Union
 
 # --- 1. Sub-Schemas for Line Items and Tokens ---
 
@@ -20,7 +20,6 @@ class TokenUsage(BaseModel):
 
 # --- 2. Nested Pagemise Data Schema ---
 
-# Define the allowed page types for classification
 PageType = Literal["Bill Detail", "Final Bill", "Pharmacy", "Other"]
 
 class PagewiseLineItems(BaseModel):
@@ -32,10 +31,7 @@ class PagewiseLineItems(BaseModel):
 # --- 3. RootModel Fix for Gemini API ---
 
 class PagewiseListRoot(RootModel):
-    """
-    CRITICAL FIX: Wraps the list of pages to simplify the JSON schema 
-    for the Gemini API's structured output.
-    """
+    """CRITICAL FIX: Wraps the list of pages to simplify the JSON schema for the Gemini API."""
     root: List[PagewiseLineItems]
 
 # --- 4. KVP Extraction Schema (Internal Use for Accuracy Check) ---
