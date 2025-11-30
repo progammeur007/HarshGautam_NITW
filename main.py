@@ -1,4 +1,5 @@
 # main.py
+# main.py
 
 from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
@@ -14,9 +15,13 @@ from typing import List, Dict, Any, Union
 
 # Robust OCR/Image Libraries
 import pytesseract
-from PIL import Image, ImageOps
+from PIL import Image
 import cv2
 import numpy as np
+
+# --- FIX: Import load_dotenv ---
+from dotenv import load_dotenv 
+# ------------------------------
 
 # Import all models
 from models import (
@@ -27,16 +32,16 @@ from models import (
 # --- 1. CRITICAL TESSERACT CONFIGURATION & LOGGING ---
 # Set the path to the Tesseract executable. THIS MUST BE CORRECT.
 try:
-    # --- PLEASE REPLACE THIS PATH WITH YOUR ACTUAL TESSERACT.EXE LOCATION ---
+    # --- REPLACE THIS PATH WITH YOUR ACTUAL TESSERACT.EXE LOCATION ---
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 except Exception:
-    # On Render deployment, this will fail silently, but LLM calls rely on API key
+    # Allows deployment environments (like Render) that lack local Tesseract to skip this step.
     pass 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 logger = logging.getLogger("BFHL_Extractor")
 
-load_dotenv()
+load_dotenv() # <--- THIS LINE WILL NOW WORK
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- FastAPI App Setup ---
@@ -64,10 +69,12 @@ class TokenTracker:
 # --- LLM Client Initialization ---
 try:
     if not GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY not found. API calls will fail.")
         client = None 
     else:
         client = genai.Client(api_key=GEMINI_API_KEY)
-except Exception:
+except Exception as e:
+    logger.error(f"Error initializing Gemini Client: {e}", exc_info=True)
     client = None
 
 
@@ -75,51 +82,47 @@ def fetch_and_ocr(document_url: str) -> str:
     """ROBUST OCR LAYER: Downloads, preprocesses (cleaning), and extracts text via Tesseract."""
     logger.info(f"Starting robust OCR for: {document_url}")
     
+    if not hasattr(pytesseract.pytesseract, 'tesseract_cmd'):
+        logger.warning("Tesseract path not set. Skipping preprocessing and returning fail code.")
+        return "OCR_FAILED_GENERIC_ERROR" 
+    
     try:
-        # 1. Download document bytes
         doc_response = requests.get(document_url, timeout=30)
         doc_response.raise_for_status()
 
-        # 2. Convert bytes to OpenCV image for preprocessing
-        image_bytes = BytesIO(doc_response.content)
+        image_bytes = io.BytesIO(doc_response.content)
         img_pil = Image.open(image_bytes).convert('RGB')
         
-        # Convert PIL Image to NumPy array (BGR format for OpenCV)
         img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
         
-        # 3. Preprocessing (CRUCIAL for handwritten/low-quality scans)
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-        
-        # Apply Binarization (Otsu's method for best contrast)
         thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         
-        # 4. Tesseract OCR Execution (High PSM mode for structured text)
         extracted_text = pytesseract.image_to_string(
             thresh, 
             lang='eng', 
-            config='--psm 6' # PSM 6 is good for single uniform block of text (tables)
+            config='--psm 6' 
         )
         
         if not extracted_text.strip():
             logger.warning("Tesseract returned empty text.")
             return "OCR_FAILED_TEXT_EMPTY" 
         
-        logger.info("OCR successful. Text length: %d", len(extracted_text))
+        logger.info("OCR successful. Extracted text length: %d", len(extracted_text))
         return extracted_text
 
     except Exception as e:
         logger.error(f"ROBUST OCR LAYER FAILED: {e}", exc_info=True)
-        # Return a fail message if the document cannot be read
         return "OCR_FAILED_GENERIC_ERROR"
 
 
 def extract_json_from_response(response: types.GenerateContentResponse) -> Any:
-    """Manually extracts the clean JSON string from the response payload."""
+    """CRITICAL FIX: Manually extracts the clean JSON string from the response payload."""
     try:
         raw_json_string = response.candidates[0].content.parts[0].text
         return json.loads(raw_json_string)
     except Exception:
-        # Re-raise as HTTP exception for external reporting
+        logger.error("LLM returned non-compliant or unreadable JSON.", exc_info=True)
         raise HTTPException(status_code=500, detail="LLM returned non-compliant or unreadable JSON.")
 
 
@@ -146,20 +149,18 @@ async def extract_bill_data(request: ExtractionRequest):
         prompt_line_items = (
             "You are an expert financial document extractor specializing in handwritten, multilingual bills. "
             "Your output MUST strictly adhere to the provided Pydantic JSON schema (a list of PagewiseLineItems). "
-            "Analyze the following text extracted via robust OCR and extract all data. "
-            "GUARDRAILS: ONLY extract numeric values clearly associated with currency or price for item_amount/item_rate. "
-            "Do NOT extract Sl#, Cpt Code, or Date into any amount field. TEXT: "
+            "Analyze the following text extracted via OCR. GUARDRAILS: ONLY extract numeric values clearly associated with currency or price for item_amount/item_rate. DO NOT extract Sl#, Cpt Code, or Date into any amount field. TEXT: "
         ) + extracted_text 
         
         response_line_items = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=[prompt_line_items], # Send the clean text
+            contents=[prompt_line_items], 
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=PagewiseListRoot 
             )
         )
-        logger.info("Call 1 (Line Items) completed.")
+        logger.info(f"Call 1 (Line Items) completed. Tokens added: {response_line_items.usage_metadata.total_token_count}")
         
         if response_line_items.usage_metadata:
             tracker.add_usage(response_line_items.usage_metadata)
@@ -170,7 +171,7 @@ async def extract_bill_data(request: ExtractionRequest):
 
         # --- CALL 2: KVP Extraction for Actual Bill Total (Reconciliation Target) ---
         prompt_totals = (
-            "You are an expert auditor. From the text, extract ONLY the final total amount "
+            "You are an expert auditor. From the document, extract ONLY the final total amount "
             "(the authoritative Grand Total, Net Payable Amount, or Final Total) and the Sub-total (if explicitly present). "
             "STRICTLY return the data in the Pydantic JSON schema (FinalTotalKVP). TEXT: "
         ) + extracted_text
@@ -184,7 +185,7 @@ async def extract_bill_data(request: ExtractionRequest):
             )
         )
         
-        logger.info("Call 2 (KVP Totals) completed.")
+        logger.info(f"Call 2 (KVP Totals) completed. Tokens added: {response_totals.usage_metadata.total_token_count}")
         
         if response_totals.usage_metadata:
             tracker.add_usage(response_totals.usage_metadata)
